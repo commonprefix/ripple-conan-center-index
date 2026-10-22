@@ -4,40 +4,225 @@ on:
   pull_request:
     paths:
       - ".github/workflows/export.yml"
-      - ".github/workflows/export-one-remote.yml"
+      - ".github/scripts/**"
       - "recipes/**"
+      - "recipes.yml"
       - "export_all.sh"
   push:
     branches:
       - master
     paths:
       - ".github/workflows/export.yml"
-      - ".github/workflows/export-one-remote.yml"
+      - ".github/scripts/**"
       - "recipes/**"
+      - "recipes.yml"
       - "export_all.sh"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  export-new:
-    uses: ./.github/workflows/export-one-remote.yml
-    with:
-      CONAN_REMOTE_URL: https://conan.xrplf.org/repository/conan/
-    secrets:
-      CONAN_LOGIN_USERNAME_XRPLF: ${{ secrets.NEXUS_REMOTE_USERNAME }}
-      CONAN_PASSWORD_XRPLF: ${{ secrets.NEXUS_REMOTE_PASSWORD }}
+  list-recipes:
+    runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.inputs.outputs.tests }}
+      exports: ${{ steps.inputs.outputs.exports }}
+      options: ${{ steps.inputs.outputs.options }}
+      xrpld_sha: ${{ steps.inputs.outputs.xrpld_sha }}
+      linux_image: ${{ steps.inputs.outputs.linux_image }}
 
-  export-old:
-    uses: ./.github/workflows/export-one-remote.yml
-    with:
-      CONAN_REMOTE_URL: https://conan.ripplex.io
-    secrets:
-      CONAN_LOGIN_USERNAME_XRPLF: ${{ secrets.CONAN_REMOTE_USERNAME }}
-      CONAN_PASSWORD_XRPLF: ${{ secrets.CONAN_REMOTE_PASSWORD }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkout xrpld
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: XRPLF/rippled
+          ref: develop
+          path: .xrpld
+          sparse-checkout: |
+            /conanfile.py
+            /.github/scripts/strategy-matrix/linux.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: 3.15
+
+      - name: Install Python dependencies
+        run: pip install conan pyyaml
+
+      - name: Check the recipes
+        run: ./export_all.sh
+
+      - name: Generate the test inputs
+        id: inputs
+        env:
+          # Empty on manual runs, so all the recipes are tested.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python .github/scripts/test_matrix.py .xrpld --base "${BASE_SHA}" | tee -a "${GITHUB_OUTPUT}"
+
+  # All the recipes in one job per configuration, so that they share the
+  # dependencies they build.
+  test-upload:
+    name: ${{ matrix.platform.name }}, ${{ matrix.build_type }}
+    needs: list-recipes
+    if: ${{ needs.list-recipes.outputs.tests != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The runners and image are the ones xrpld builds with, see
+        # https://github.com/XRPLF/rippled/tree/develop/.github/scripts/strategy-matrix
+        platform:
+          - name: linux-gcc
+            runs_on: [self-hosted, Linux, X64, heavy]
+            image: ${{ needs.list-recipes.outputs.linux_image }}
+            compiler: gcc
+          - name: linux-clang
+            runs_on: [self-hosted, Linux, X64, heavy]
+            image: ${{ needs.list-recipes.outputs.linux_image }}
+            compiler: clang
+          - name: macos
+            runs_on: [self-hosted, macOS, ARM64, macos-26-apple-clang-21]
+          - name: windows
+            runs_on: [self-hosted, Windows, dev-box-windows-2026]
+        build_type: [Debug, Release]
+    runs-on: ${{ matrix.platform.runs_on }}
+    container: ${{ matrix.platform.image || null }}
+    timeout-minutes: 360
+
+    steps:
+      - name: Cleanup workspace (macOS and Windows)
+        if: ${{ runner.os == 'macOS' || runner.os == 'Windows' }}
+        uses: XRPLF/actions/cleanup-workspace@c7d9ce5ebb03c752a354889ecd870cadfc2b1cd4
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkout xrpld Conan configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: XRPLF/rippled
+          ref: ${{ needs.list-recipes.outputs.xrpld_sha }}
+          path: .xrpld
+          sparse-checkout: conan
+          persist-credentials: false
+
+      - name: Prepare runner
+        uses: XRPLF/actions/prepare-runner@8e98d61f011fd2a67f3fde5f0f075662c099a527
+        with:
+          enable_ccache: false
+
+      - name: Get number of processors
+        uses: XRPLF/actions/get-nproc@cf0433aa74563aead044a1e395610c96d65a37cf
+        id: nproc
+        with:
+          subtract: 2
+
+      - name: Set compiler environment (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        uses: XRPLF/rippled/.github/actions/set-compiler-env@develop
+        with:
+          compiler: ${{ matrix.platform.compiler }}
+
+      - name: Setup Conan
+        run: |
+          ./.xrpld/conan/init.sh
+          conan remote list
+
+      - name: Create the recipe-test profile
+        env:
+          OPTIONS: ${{ needs.list-recipes.outputs.options }}
+        run: |
+          {
+              echo "include(ci)"
+              echo "[options]"
+              for option in ${OPTIONS}; do
+                  echo "${option}"
+              done
+          } >"$(conan config home)/profiles/recipe-test"
+
+      - name: Show the recipe-test profile
+        run: conan profile show --profile:all recipe-test
+
+      # Not export_all.sh, as it needs yq, which the test runners may not have.
+      - name: Export the recipes
+        env:
+          EXPORTS: ${{ needs.list-recipes.outputs.exports }}
+        run: |
+          for export in ${EXPORTS}; do
+              conan export "${export%:*}" --version="${export#*:}"
+          done
+
+      - name: Build the recipes and run their test_package
+        env:
+          BUILD_NPROC: ${{ steps.nproc.outputs.nproc }}
+          BUILD_TYPE: ${{ matrix.build_type }}
+          TESTS: ${{ needs.list-recipes.outputs.tests }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/graphs"
+          for test in ${TESTS}; do
+              directory="${test%:*}"
+              version="${test#*:}"
+              name="$(basename "$(dirname "${directory}")")"
+              graph="${RUNNER_TEMP}/graphs/${name}-${version}.json"
+              echo "::group::${name}/${version}"
+              # Exit code 6 is ConanInvalidConfiguration: the recipe's validate()
+              # rejects this configuration, so it is skipped, as on ConanCenter.
+              # Any other failure fails the job. The graph is only kept on
+              # success, as a partial one is written on failure too.
+              if conan create "${directory}" \
+                  --version="${version}" \
+                  --profile:all recipe-test \
+                  --build=missing \
+                  --settings:all build_type="${BUILD_TYPE}" \
+                  --conf:all tools.build:jobs="${BUILD_NPROC}" \
+                  --format=json >"${graph}.tmp"; then
+                  mv "${graph}.tmp" "${graph}"
+              elif [[ $? -eq 6 ]]; then
+                  rm -f "${graph}.tmp"
+                  echo "${name}/${version}: invalid configuration, skipped"
+              else
+                  exit 1
+              fi
+              echo "::endgroup::"
+          done
+
+      # Only what was built here, as `conan upload '*'` would also publish the
+      # recipes that were exported but not tested in this run.
+      - name: List the built packages
+        run: |
+          shopt -s nullglob
+          # Seeded with an empty list: `conan pkglist merge` needs at least one,
+          # and a platform may have skipped every recipe. `conan upload` accepts
+          # the empty result.
+          mkdir -p "${RUNNER_TEMP}/built"
+          echo '{"Local Cache": {}}' >"${RUNNER_TEMP}/built/empty.json"
+          lists=(--list="${RUNNER_TEMP}/built/empty.json")
+          for graph in "${RUNNER_TEMP}"/graphs/*.json; do
+              built="${RUNNER_TEMP}/built/$(basename "${graph}")"
+              conan list --graph="${graph}" --graph-binaries=build --format=json >"${built}"
+              lists+=(--list="${built}")
+          done
+          conan pkglist merge "${lists[@]}" --format=json >"${RUNNER_TEMP}/built.json"
+          cat "${RUNNER_TEMP}/built.json"
+
+      - name: Upload the built packages (dry run)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: conan upload --list="${RUNNER_TEMP}/built.json" --remote=xrplf --confirm --check --dry-run
+
+      - name: Upload the built packages
+        if: ${{ github.repository_owner == 'XRPLF' && github.event_name != 'pull_request' }}
+        env:
+          CONAN_LOGIN_USERNAME_XRPLF: ${{ secrets.NEXUS_REMOTE_USERNAME }}
+          CONAN_PASSWORD_XRPLF: ${{ secrets.NEXUS_REMOTE_PASSWORD }}
+        run: conan upload --list="${RUNNER_TEMP}/built.json" --remote=xrplf --confirm --check

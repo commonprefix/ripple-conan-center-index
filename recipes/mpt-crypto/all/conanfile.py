@@ -23,10 +23,10 @@ class MptCryptoConan(ConanFile):
         "tests": False,
     }
 
-    requires = [
-        "openssl/[>=3.5 <4]",
-        "secp256k1/0.7.1",
-    ]
+    def requirements(self):
+        self.requires("openssl/[>=3.5 <4]")
+        # The public headers include <secp256k1.h>
+        self.requires("secp256k1/0.7.1", transitive_headers=True)
 
     def source(self):
         get(self, **self.conan_data["sources"][self.version], strip_root=True)

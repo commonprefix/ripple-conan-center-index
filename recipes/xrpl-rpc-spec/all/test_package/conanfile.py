@@ -12,6 +12,7 @@ class TestPackageConan(ConanFile):
 
     default_options = {
         "xrpl-rpc-spec/*:server": "clio",
+        "xrpl/*:benchmark": False,
         "xrpl/*:rocksdb": True,
         "xrpl/*:tests": False,
     }
@@ -21,7 +22,7 @@ class TestPackageConan(ConanFile):
 
     def requirements(self):
         self.requires(self.tested_reference_str)
-        self.requires("xrpl/3.3.0")
+        self.requires("xrpl/3.4.1")
         self.requires("boost/1.91.0", override=True)
 
     def build(self):

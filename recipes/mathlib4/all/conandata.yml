@@ -1,0 +1,25 @@
+# lake fetches mathlib and its closure from the revisions pinned in
+# lake/<version>/lake-manifest.json, exported alongside this recipe;
+# conan.tools.files.get is never used here. `sources` exists because
+# export_all.sh checks that every exported version has an entry, and it points
+# at the mathlib tag the version was pinned from so the correspondence is
+# visible without opening the manifest. The manifest stays the single source of
+# truth for the exact revision.
+sources:
+  "4.34.1":
+    url: "https://github.com/leanprover-community/mathlib4/tree/v4.34.1"
+
+# The `:static` library targets of the closure, one list per version: their
+# names come from each dependency's own lakefile, so they cannot be derived from
+# the manifest. `Cli` is absent: only executables (importGraph's, mathlib's
+# scripts) import it, so no library depends on it.
+dep_targets:
+  "4.34.1":
+    - "ProofWidgets:static"
+    - "ImportGraph:static"
+    - "LeanSearchClient:static"
+    - "Plausible:static"
+    - "Aesop:static"
+    - "Qq:static"
+    - "Batteries:static"
+    - "Mathlib:static"

@@ -59,5 +59,9 @@ class WasmXrplfConan(ConanFile):
 
     def package_info(self):
         self.cpp_info.libs = ["iwasm"]
+        if self.settings.os in ["Linux", "FreeBSD"]:
+            self.cpp_info.system_libs.extend(["pthread", "m", "dl"])
+        elif self.settings.os == "Windows":
+            self.cpp_info.system_libs.append("ntdll")
         self.cpp_info.names["cmake_find_package"] = "wasm-xrplf"
         self.cpp_info.names["cmake_find_package_multi"] = "wasm-xrplf"

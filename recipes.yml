@@ -1,0 +1,19 @@
+# The folder of each version is looked up in recipes/<name>/config.yml.
+recipes:
+  - abseil/20250127.0
+  - corrosion/0.6.1
+  - ed25519/2015.03
+  - grpc/1.81.1
+  - lean4/4.34.1
+  - mathlib4/4.34.1
+  - mpt-crypto/1.0.5
+  - openssl/3.5.9
+  - openssl/3.6.5
+  - opentelemetry-cpp/1.27.0
+  - opentelemetry-cpp/1.28.0
+  - secp256k1/0.7.1
+  - snappy/1.1.10
+  - wasm-xrplf/2.4.1-xrplf
+  - wasmi/1.0.6
+  - wasmi/1.0.9
+  - xrpl-rpc-spec/0.1.30
