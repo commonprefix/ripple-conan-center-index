@@ -1,0 +1,16 @@
+sources:
+  "4.34.1":
+    Linux:
+      x86_64:
+        url: "https://github.com/leanprover/lean4/releases/download/v4.34.1/lean-4.34.1-linux.zip"
+        sha256: "3013aba02bb8bf31b1cf8c9d956d60fb95bb1c10920dfe91abcaa59cb461ddac"
+      armv8:
+        url: "https://github.com/leanprover/lean4/releases/download/v4.34.1/lean-4.34.1-linux_aarch64.zip"
+        sha256: "b4bcf1d79f1b5859c04625058d3707701d87a65815f7f0686a1f14df821954c5"
+    Macos:
+      x86_64:
+        url: "https://github.com/leanprover/lean4/releases/download/v4.34.1/lean-4.34.1-darwin.zip"
+        sha256: "60b45c76003a4561fb66d7ec2003569006d255d2860179445e56d3e2a029090e"
+      armv8:
+        url: "https://github.com/leanprover/lean4/releases/download/v4.34.1/lean-4.34.1-darwin_aarch64.zip"
+        sha256: "9019fcd34e93fddf0ecf9d40d28f05a86ba563ac3b701a9c5116ce1c96379360"

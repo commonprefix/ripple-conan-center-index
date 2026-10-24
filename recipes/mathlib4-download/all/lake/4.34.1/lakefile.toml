@@ -1,0 +1,10 @@
+# Workspace for building the Lean dependency closure. Only mathlib is required
+# directly; lake takes the rest of the closure from lake-manifest.json. The
+# workspace name is the Conan package's; lake-manifest.json's root `name` must
+# match it.
+name = "mathlib4"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.34.1"
