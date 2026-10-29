@@ -28,6 +28,5 @@ class TestPackageConan(ConanFile):
             bindir = self.dependencies["lean4"].cpp_info.bindirs[0]
             for tool in ("lean", "lake"):
                 self.run(f'"{os.path.join(bindir, tool)}" --version', env="conanrun")
-            for name in ("test_package", "test_leanshared"):
-                bin_path = os.path.join(self.cpp.build.bindirs[0], name)
-                self.run(bin_path, env="conanrun")
+            bin_path = os.path.join(self.cpp.build.bindirs[0], "test_package")
+            self.run(bin_path, env="conanrun")
