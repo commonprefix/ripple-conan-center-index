@@ -1,0 +1,8 @@
+# Requires mathlib; lake-manifest.json pins the rest of the closure, and its
+# root `name` must match this one.
+name = "mathlib4"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.34.1"

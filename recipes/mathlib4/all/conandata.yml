@@ -1,0 +1,18 @@
+# lake fetches mathlib and its closure from lake/<version>/lake-manifest.json.
+# `sources` is only there because export_all.sh wants an entry per version.
+sources:
+  "4.34.1":
+    url: "https://github.com/leanprover-community/mathlib4/tree/v4.34.1"
+
+# The `:static` library targets of the closure, named in each dependency's own
+# lakefile. `Cli` is only imported by executables.
+dep_targets:
+  "4.34.1":
+    - "ProofWidgets:static"
+    - "ImportGraph:static"
+    - "LeanSearchClient:static"
+    - "Plausible:static"
+    - "Aesop:static"
+    - "Qq:static"
+    - "Batteries:static"
+    - "Mathlib:static"

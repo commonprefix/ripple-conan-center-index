@@ -1,7 +1,8 @@
 from conan import ConanFile, tools
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
-from conan.tools.files import get, copy
+from conan.tools.files import get, copy, load
 import os
+import re
 
 required_conan_version = ">=2.0.0"
 
@@ -46,17 +47,30 @@ class SecpConan(ConanFile):
         cmake.install()
 
         # These headers are used by XRPLF/mpt-crypto which is why we need to package them.
-        src_headers = ["util.h", "int128.h", "int128_impl.h", "scalar.h", "scalar_impl.h",
-                       "field.h", "field_impl.h", "group.h", "group_impl.h"]
-        src_headers_dependencies = ["checkmem.h", "int128_native.h", "int128_native_impl.h", "scalar_4x64.h", "scalar_4x64_impl.h", "modinv64.h", "modinv64_impl.h", "int128_struct.h", "int128_struct_impl.h",
-                                    "field_5x52.h", "field_5x52_impl.h", "field_5x52_int128_impl.h", "field_10x26.h", "field_10x26_impl.h"]
-        for header in src_headers + src_headers_dependencies:
-            copy(
-                self,
-                header,
-                src=os.path.join(self.source_folder, "src"),
-                dst=os.path.join(self.package_folder, "include", "private")
-            )
+        # ecmult_impl.h reads the library's own secp256k1_pre_g tables, so consumers must link the
+        # static library and must not compile with an ECMULT_WINDOW_SIZE larger than the library's.
+        src_headers = ["util.h", "int128_impl.h", "scalar_impl.h", "field_impl.h", "group_impl.h",
+                       "ecmult_impl.h", "scratch_impl.h"]
+        src_dir = os.path.join(self.source_folder, "src")
+        for header in self._with_included_headers(src_dir, src_headers):
+            copy(self, header, src=src_dir, dst=os.path.join(self.package_folder, "include", "private"))
+
+    def _with_included_headers(self, src_dir, headers):
+        # Follow `#include "..."` transitively, keeping only files inside src/ (this skips
+        # "../include/secp256k1.h", which cmake.install() already provides).
+        include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
+        found = set()
+        pending = list(headers)
+        while pending:
+            header = pending.pop()
+            if header in found:
+                continue
+            found.add(header)
+            content = load(self, os.path.join(src_dir, header))
+            for included in include_re.findall(content):
+                if not os.path.normpath(included).startswith(".."):
+                    pending.append(included)
+        return sorted(found)
 
     def package_info(self):
         self.cpp_info.libs = ["secp256k1"]

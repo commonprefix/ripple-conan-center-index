@@ -36,3 +36,8 @@ class WasmiConan(ConanFile):
 
     def package_info(self):
         self.cpp_info.libs = ["wasmi"]
+        # As linked in crates/c_api/CMakeLists.txt
+        if self.settings.os in ["Linux", "FreeBSD"]:
+            self.cpp_info.system_libs.extend(["pthread", "dl", "m"])
+        elif self.settings.os == "Windows":
+            self.cpp_info.system_libs.extend(["ws2_32", "advapi32", "userenv", "ntdll", "shell32", "ole32", "bcrypt"])

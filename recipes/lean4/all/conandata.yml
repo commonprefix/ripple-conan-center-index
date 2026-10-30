@@ -1,0 +1,4 @@
+sources:
+  "4.34.1":
+    url: "https://github.com/leanprover/lean4.git"
+    commit: "5045d0056413266e57c625dcd7c365b10e377c52"
