@@ -8,8 +8,9 @@ from conan.errors import ConanException, ConanInvalidConfiguration
 from conan.tools.build import build_jobs
 from conan.tools.env import Environment
 from conan.tools.files import copy
+from conan.tools.scm import Git
 
-# 2.1: `quiet` on self.run.
+# 2.1: Git.get_commit(repository=True).
 required_conan_version = ">=2.1.0"
 
 
@@ -42,12 +43,11 @@ class Mathlib4Conan(ConanFile):
         copy(self, "*", src=os.path.join(self.recipe_folder, "lake", self.version), dst=self.export_sources_folder)
 
     def package_id(self):
-        # Profiles inject confs into every package_id.
         self.info.conf.clear()
 
     def validate(self):
         if self.settings.os == "Windows":
-            raise ConanInvalidConfiguration(f"{self.ref}: Windows is not supported yet")
+            raise ConanInvalidConfiguration(f"{self.ref}: Windows is not supported")
 
     def validate_build(self):
         # leanc compiles for the build platform, so a cross build would
@@ -58,7 +58,6 @@ class Mathlib4Conan(ConanFile):
             raise ConanInvalidConfiguration(f"{self.ref}: cross-building is not supported")
 
     def requirements(self):
-        # Callers of the objects need lean.h.
         self.requires(f"lean4/{self.version}", transitive_headers=True)
 
     def build_requirements(self):
@@ -66,7 +65,7 @@ class Mathlib4Conan(ConanFile):
 
     def generate(self):
         env = Environment()
-        # Either would change what lake builds with or keys its traces on.
+        # Either would change what lake builds with or the githash
         env.unset("LEAN_CC")
         env.unset("LEAN_GITHASH")
         env.define("LEAN_NUM_THREADS", str(build_jobs(self)))
@@ -129,22 +128,14 @@ class Mathlib4Conan(ConanFile):
     def _shallow_git(self, repo):
         # lake reads each dependency's revision and URL from its `.git`, and
         # re-clones without one. Keep only the pinned commit: mathlib's history
-        # is several hundred MB.
-        def git(args):
-            out = StringIO()
-            self.run(f'git -C "{repo}" {args}', stdout=out, quiet=True)
-            return out.getvalue().strip()
-
-        rev = git("rev-parse HEAD")
-        url = git("remote get-url origin")
-        full = repo / ".git.full"
-        (repo / ".git").rename(full)
-        git("init -q")
-        git(f'fetch -q --depth 1 "file://{full}" {rev}')
-        git(f"update-ref HEAD {rev}")
-        git("read-tree HEAD")
-        git(f'remote add origin "{url}"')
-        shutil.rmtree(full)
+        # is several hundred MB. fetch_commit checks the commit out, which git
+        # refuses over the existing files: fetch elsewhere and keep the .git.
+        full = Git(self, folder=repo)
+        shallow = Git(self, folder=os.path.join(self.build_folder, "shallow", repo.name))
+        shallow.fetch_commit(str(repo / ".git"), full.get_commit(repository=True))
+        shallow.run(f'remote set-url origin "{full.get_remote_url()}"')
+        shutil.rmtree(repo / ".git")
+        shutil.move(os.path.join(shallow.folder, ".git"), repo / ".git")
 
     def package_info(self):
         self.cpp_info.libs = ["mathlib4"]

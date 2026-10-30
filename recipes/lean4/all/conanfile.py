@@ -40,9 +40,6 @@ class Lean4Conan(ConanFile):
         self.settings.rm_safe("compiler.cppstd")
 
     def package_id(self):
-        # One binary per platform for the Nix dev shell, whatever the
-        # consumer's compiler or profile.
-        del self.info.settings.compiler
         self.info.conf.clear()
 
     def validate(self):
@@ -76,19 +73,24 @@ class Lean4Conan(ConanFile):
         # shell's lean4 has an older leantar that cannot read mathlib's cache).
         tc.cache_variables["CADICAL"] = False
         tc.cache_variables["LEANTAR"] = False
-        # Keep the binaries working in later Nix dev shells, where only the
-        # pinned glibc stays at the same store path: leanc calls the C compiler
-        # by name, and libstdc++ is static and kept out of the dynamic symbol
-        # table, since libleanshared is loaded next to the consumer's own.
+
         compilers = self.conf.get("tools.build:compiler_executables", default={}, check_type=dict)
         tc.cache_variables["LEANC_CC"] = compilers.get("c", "cc")
+
+        # By default, the binaries embed the the builder's path for the compiler and libstdc++.
+        # If the dev flake does not have the exact same paths, the binaries won't run.
+        # Link libstdc++ statically on Linux (macOS's libc++ is a stable system library).
         if self.settings.os == "Linux" and str(self.settings.compiler.libcxx).startswith("libstdc++"):
+            # The Lean libraries, linked by the C compiler. --exclude-libs keeps the
+            # copy private, as libleanshared shares the process with the consumer's own libstdc++.
             tc.cache_variables["LEAN_CXX_STDLIB"] = (
                 "-static-libstdc++ -Wl,-Bstatic -lstdc++ -Wl,-Bdynamic -Wl,--exclude-libs,libstdc++.a"
             )
-            # cadical's makefile links with `c++` unless told otherwise.
-            tc.cache_variables["CADICAL_USE_CUSTOM_CXX"] = True
+            # The lean and lake executables.
             tc.cache_variables["LEANC_INTERNAL_LINKER_FLAGS"] = "-static-libstdc++"
+            # The cadical executable (lean feature: bv_decide): its makefile otherwise links
+            # with `c++` and ignores the flags above.
+            tc.cache_variables["CADICAL_USE_CUSTOM_CXX"] = True
         tc.generate()
         # Lean finds gmp, libuv and openssl through pkg-config, by those names.
         deps = PkgConfigDeps(self)
