@@ -1,125 +1,121 @@
 import os
+import shutil
+from io import StringIO
 
 from conan import ConanFile
-from conan.errors import ConanInvalidConfiguration
-from conan.tools.files import copy, get
-from conan.tools.layout import basic_layout
+from conan.errors import ConanException, ConanInvalidConfiguration
+from conan.tools.cmake import CMake, CMakeToolchain
+from conan.tools.gnu import PkgConfigDeps
+from conan.tools.scm import Git
 
-required_conan_version = ">=2.0.0"
+# 2.7: PkgConfigDeps.set_property.
+required_conan_version = ">=2.7.0"
 
 
 class Lean4Conan(ConanFile):
-    """The Lean 4 toolchain (lean, lake, leanc, headers, runtime).
+    """The Lean 4 toolchain (lean, lake, leanc, headers, runtime), built from
+    the release commit so that its githash, which lake keys its traces on,
+    matches mathlib's olean cache.
 
-    Unpacks the official leanprover/lean4 release rather than building from
-    source. A release build reports the upstream `lean --githash`, which lake
-    records in its build traces, so artifacts produced with it stay compatible
-    with the mathlib olean cache.
-
-    No package_type is declared: the release is at once a toolchain (bin/lean,
-    bin/lake) and a mix of static and shared libraries (libLake.a beside
-    libleanshared.so), with no shared/static choice to expose. Declaring
-    "library" would require a `shared` option that means nothing here.
-    """
+    Building needs git and network access (cadical, mimalloc, leantar)."""
 
     name = "lean4"
     description = "The Lean 4 theorem prover and toolchain"
     license = "Apache-2.0"
     url = "https://github.com/XRPLF/conan-center-index"
     homepage = "https://github.com/leanprover/lean4"
-    topics = ("lean", "lean4", "theorem-prover", "formal-verification", "pre-built")
+    topics = ("lean", "lean4", "theorem-prover", "formal-verification")
 
-    # The release archives are prebuilt, so their contents depend only on the
-    # platform, not on the consumer's compiler or build type. Declaring os/arch
-    # alone yields exactly one binary per platform, shared by every consumer
-    # configuration, instead of an identical copy per compiler/build_type.
-    settings = "os", "arch"
-
-    @property
-    def _releases(self):
-        return self.conan_data["sources"][self.version]
+    # No build_type: Lean builds Release by default, which is what consumers
+    # want whatever their own build type.
+    settings = "os", "arch", "compiler"
 
     def layout(self):
-        basic_layout(self, src_folder="src")
+        # Not cmake_layout, which needs build_type.
+        self.folders.source = "src"
+        self.folders.build = "build"
+        self.folders.generators = os.path.join("build", "generators")
+
+    def configure(self):
+        self.settings.rm_safe("compiler.cppstd")
 
     def package_id(self):
-        # An unpacked upstream release: the content depends on the platform and
-        # nothing else. Consumer profiles inject C++ concerns into every
-        # package_id through `tools.info.package_id:confs` (rippled's default
-        # profile adds user.package:cppstd_version, XRPLF's ci profile also
-        # user.package:libc_version); clearing them keeps
-        # one binary per platform, so a consumer whose profile differs from the
-        # publisher's still gets a cache hit instead of re-downloading.
         self.info.conf.clear()
 
     def validate(self):
-        # No release listed in conandata.yml => ConanInvalidConfiguration.
-        # This specific error is then interpreted as "skip this combination" by the CI
-        os_name, arch = str(self.settings.os), str(self.settings.arch)
-        if arch not in self._releases.get(os_name, {}):
-            raise ConanInvalidConfiguration(
-                f"{self.name}/{self.version}: no upstream release for "
-                f"{os_name}/{arch}"
+        if self.settings.compiler == "msvc":
+            raise ConanInvalidConfiguration(f"{self.ref}: MSVC is not supported")
+
+    def requirements(self):
+        self.requires("gmp/6.3.0")
+        self.requires("libuv/1.53.0")
+        self.requires("openssl/[>=3 <4]")
+
+    def build_requirements(self):
+        self.tool_requires("cmake/[>=3.21 <5]")
+        self.tool_requires("pkgconf/2.2.0")
+
+    def source(self):
+        source = self.conan_data["sources"][self.version]
+        Git(self).fetch_commit(source["url"], source["commit"])
+
+    def generate(self):
+        # Lean only builds with Makefiles, and configures its two stages as
+        # sub-builds that do not get Conan's toolchain file: pass its path.
+        tc = CMakeToolchain(self, generator="Unix Makefiles")
+        toolchain = os.path.join(self.generators_folder, "conan_toolchain.cmake")
+        tc.cache_variables["STAGE0_CMAKE_TOOLCHAIN_FILE"] = toolchain
+        tc.cache_variables["STAGE1_CMAKE_TOOLCHAIN_FILE"] = toolchain
+        # Installed at the root, `LICENSES` (a file) would collide with
+        # `licenses/` on a case-insensitive filesystem; package() copies them.
+        tc.cache_variables["INSTALL_LICENSE"] = False
+        # Use the pinned cadical and leantar, not whatever is on PATH (the Nix
+        # shell's lean4 has an older leantar that cannot read mathlib's cache).
+        tc.cache_variables["CADICAL"] = False
+        tc.cache_variables["LEANTAR"] = False
+
+        compilers = self.conf.get("tools.build:compiler_executables", default={}, check_type=dict)
+        tc.cache_variables["LEANC_CC"] = compilers.get("c", "cc")
+
+        # By default, the binaries embed the the builder's path for the compiler and libstdc++.
+        # If the dev flake does not have the exact same paths, the binaries won't run.
+        # Link libstdc++ statically on Linux (macOS's libc++ is a stable system library).
+        if self.settings.os == "Linux" and str(self.settings.compiler.libcxx).startswith("libstdc++"):
+            # The Lean libraries, linked by the C compiler. --exclude-libs keeps the
+            # copy private, as libleanshared shares the process with the consumer's own libstdc++.
+            tc.cache_variables["LEAN_CXX_STDLIB"] = (
+                "-static-libstdc++ -Wl,-Bstatic -lstdc++ -Wl,-Bdynamic -Wl,--exclude-libs,libstdc++.a"
             )
+            # The lean and lake executables.
+            tc.cache_variables["LEANC_INTERNAL_LINKER_FLAGS"] = "-static-libstdc++"
+            # The cadical executable (lean feature: bv_decide): its makefile otherwise links
+            # with `c++` and ignores the flags above.
+            tc.cache_variables["CADICAL_USE_CUSTOM_CXX"] = True
+        tc.generate()
+        # Lean finds gmp, libuv and openssl through pkg-config, by those names.
+        deps = PkgConfigDeps(self)
+        deps.set_property("libuv", "pkg_config_name", "libuv")
+        deps.generate()
 
-    @property
-    def _release_folder(self):
-        # A subfolder, so the layout's generators folder stays out of package().
-        return os.path.join(self.build_folder, "release")
-
-    # Downloaded in build() into the build folder: the archive is
-    # platform-specific, while source() and the source folder are shared across
-    # package_ids, so a second platform would unpack over the first.
     def build(self):
-        get(
-            self,
-            **self._releases[str(self.settings.os)][str(self.settings.arch)],
-            destination=self._release_folder,
-            strip_root=True,
-            keep_permissions=True,
-        )
+        cmake = CMake(self)
+        cmake.configure()
+        cmake.build()
+        # Without git at configure time Lean silently embeds an empty githash.
+        expected = self.conan_data["sources"][self.version]["commit"]
+        githash = StringIO()
+        self.run(f'"{os.path.join(self.build_folder, "stage1", "bin", "lean")}" --githash', stdout=githash)
+        if githash.getvalue().strip() != expected:
+            raise ConanException(f"{self.ref}: built githash {githash.getvalue().strip()!r}, expected {expected}")
 
     def package(self):
-        # Keep the release layout as shipped: bin/ needs lib/lean/ beside it,
-        # and lake resolves the stdlib relative to its own location. The two
-        # licence files (LICENSES is a file, the third-party notices) move to
-        # licenses/ and are left out of the root: on a case-insensitive
-        # filesystem `LICENSES` and `licenses/` are the same path, and
-        # creating the directory next to the file fails on macOS.
-        copy(
-            self,
-            "*",
-            src=self._release_folder,
-            dst=self.package_folder,
-            excludes=["LICENSE", "LICENSES"],
-        )
+        CMake(self).install()
+        licenses = os.path.join(self.package_folder, "licenses")
+        os.makedirs(licenses)
         for name in ("LICENSE", "LICENSES"):
-            copy(
-                self,
-                name,
-                src=self._release_folder,
-                dst=os.path.join(self.package_folder, "licenses"),
-            )
+            shutil.copy(os.path.join(self.source_folder, name), licenses)
 
     def package_info(self):
-        self.cpp_info.set_property("cmake_file_name", "lean4")
-        self.cpp_info.set_property("cmake_target_name", "lean4::lean4")
-        libdir = os.path.join("lib", "lean")
-        # Two components, so a consumer that only needs the runtime can link
-        # lean4::leanshared and skip libLake. lean4::lean4 carries both.
-        # Conan puts bindirs on PATH for tool_requires consumers by itself, so
-        # no explicit buildenv_info is needed.
-        leanshared = self.cpp_info.components["leanshared"]
-        leanshared.set_property("cmake_target_name", "lean4::leanshared")
-        leanshared.includedirs = ["include"]
-        leanshared.libdirs = [libdir]
-        leanshared.bindirs = ["bin"]
-        leanshared.libs = ["leanshared"]
-        lake = self.cpp_info.components["lake"]
-        lake.set_property("cmake_target_name", "lean4::lake")
-        lake.includedirs = []
-        lake.libdirs = [libdir]
-        lake.bindirs = []
-        lake.libs = ["Lake"]
-        # Lake depends on the runtime; the requires keeps the link order.
-        lake.requires = ["leanshared"]
+        self.cpp_info.libdirs = [os.path.join("lib", "lean")]
+        # Lake before the runtime it depends on.
+        self.cpp_info.libs = ["Lake", "leanshared"]

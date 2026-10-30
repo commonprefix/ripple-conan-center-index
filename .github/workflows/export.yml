@@ -177,7 +177,7 @@ jobs:
               graph="${RUNNER_TEMP}/graphs/${name}-${version}.json"
               echo "::group::${name}/${version}"
               # Exit code 6 is ConanInvalidConfiguration: the recipe's validate()
-              # rejects this configuration, so it is skipped, as on ConanCenter.
+              # rejects this configuration, so it is skipped.
               # Any other failure fails the job. The graph is only kept on
               # success, as a partial one is written on failure too.
               if conan create "${directory}" \
